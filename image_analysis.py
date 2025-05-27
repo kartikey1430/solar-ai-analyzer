@@ -1,57 +1,65 @@
-import base64
+import os
 import requests
 from PIL import Image
-from io import BytesIO
+import base64
+import io
 
 def analyze_image(image: Image.Image):
-    # Convert image to base64
-    buffered = BytesIO()
-    image.save(buffered, format="PNG")
-    img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+    try:
+        # Convert image to base64
+        buffered = io.BytesIO()
+        image.save(buffered, format="JPEG")
+        img_base64 = base64.b64encode(buffered.getvalue()).decode()
 
-    # Claude-compatible payload
-    payload = {
-        "model": "anthropic/claude-3-sonnet",
-        "messages": [{
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        "Analyze the rooftop in this image and provide:\n"
-                        "- Estimated rooftop area in square meters\n"
-                        "- Obstruction presence (trees, chimneys, etc.)\n"
-                        "- Suitability for solar panel installation\n"
-                        "- A short one-line recommendation"
-                    )
-                },
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/png;base64,{img_str}"
-                    }
-                }
+        # Get API key from environment variable
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            return {"error": "Missing API key. Please set OPENROUTER_API_KEY in your environment."}
+
+        # Claude 3 Sonnet via OpenRouter
+        url = "https://openrouter.ai/api/v1/chat/completions"
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        prompt = f"""
+You are a solar analysis expert. Analyze the following rooftop satellite image to estimate:
+1. Total usable rooftop area in square meters (approx.)
+2. Obstructions or issues
+3. Suitability for solar panels
+4. One-line recommendation
+
+Format the output as JSON like:
+{{
+  "raw_output": "...",
+  "estimated_area_sqm": number
+}}
+The image (base64) is: {img_base64}
+"""
+
+        payload = {
+            "model": "anthropic/claude-3-sonnet",
+            "messages": [
+                {"role": "user", "content": prompt}
             ]
-        }],
-        "max_tokens": 500
-    }
+        }
 
-    headers = {
-        "Authorization": "Bearer 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"
-    }
+        response = requests.post(url, headers=headers, json=payload, timeout=60)
 
-    response = requests.post("https://openrouter.ai/api/v1/chat/completions", json=payload, headers=headers)
+        if response.status_code != 200:
+            return {"error": f"API call failed: {response.status_code} - {response.text}"}
 
-    if response.status_code == 200:
+        result_text = response.json()["choices"][0]["message"]["content"]
+
+        # Try to convert stringified JSON
         try:
-            content = response.json()["choices"][0]["message"]["content"]
-            # Extract area (optional enhancement)
-            estimated_area = 120  # fallback assumption
-            return {
-                "raw_output": content,
-                "estimated_area_sqm": estimated_area
-            }
-        except Exception as e:
-            return {"error": f"Parsing error: {str(e)}"}
-    else:
-        return {"error": "Failed to process image. Check API key or quota."}
+            import json
+            parsed = json.loads(result_text)
+            return parsed
+        except:
+            return {"raw_output": result_text}
+
+    except Exception as e:
+        return {"error": str(e)}
